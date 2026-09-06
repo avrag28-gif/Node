@@ -53,7 +53,8 @@ class EnsembleBrain:
         self.scaler = joblib.load(self.scaler_path)
         meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
         self.weights = np.asarray(meta.get("weights", [0.25] * 4), dtype=float)
-        self.weights = self.weights / self.weights.sum()
+        total = float(self.weights.sum())
+        self.weights = self.weights / total if total > 0 else np.ones(4) / 4
 
     def load_summary(self) -> dict[str, Any] | None:
         if not self.meta_path.exists():
@@ -151,8 +152,28 @@ class EnsembleBrain:
         m.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss="sparse_categorical_crossentropy", metrics=["accuracy"])
         return m
 
+    @staticmethod
+    def _pad_probabilities(probabilities: np.ndarray, model: Any) -> np.ndarray:
+        """Normalize sklearn probability output to the fixed [-1,0,1] class order."""
+        p = np.asarray(probabilities, dtype=float)
+        if p.ndim == 1:
+            p = p[None, :]
+        classes = getattr(model, "classes_", None)
+        if classes is None:
+            return p if p.shape[-1] == 3 else np.pad(p, ((0, 0), (0, max(0, 3 - p.shape[-1]))))[:, :3]
+        out = np.zeros((p.shape[0], 3), dtype=float)
+        for col, cls in enumerate(np.asarray(classes).astype(int)):
+            idx = int(cls) if 0 <= int(cls) <= 2 else None
+            if idx is not None and col < p.shape[1]:
+                out[:, idx] = p[:, col]
+        return out
+
     def train(self, df: pd.DataFrame, symbol: str, timeframe: str, epochs: int, horizon: int, progress: Callable[[int, int, float | None, float | None], None]) -> dict[str, Any]:
         tf.keras.utils.set_random_seed(42)
+        df = df.copy().sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
+        if len(df) < 600:
+            raise ValueError(f"Need at least 600 raw candles; received {len(df)}")
+
         feats = self.features(df)
         y = self.labels(df, horizon)
         valid = feats.notna().all(axis=1) & y.notna()
@@ -161,7 +182,10 @@ class EnsembleBrain:
         if len(feats) < 600:
             raise ValueError(f"Not enough clean samples after feature engineering: {len(feats)}")
 
-        # Strict chronological split: no random shuffling across time.
+        # Require all three classes in the training set. Otherwise the ensemble cannot produce a stable 3-way model.
+        if y.nunique() < 3:
+            raise ValueError(f"Training range contains only {y.nunique()} direction classes; choose a wider M5 date range with at least 3 classes")
+
         n = len(feats)
         train_end = int(n * 0.70)
         val_end = int(n * 0.85)
@@ -178,16 +202,22 @@ class EnsembleBrain:
         x_train, y_train = xs[:seq_cut_train], ys[:seq_cut_train]
         x_val, y_val = xs[seq_cut_train:seq_cut_val], ys[seq_cut_train:seq_cut_val]
         x_test, y_test = xs[seq_cut_val:], ys[seq_cut_val:]
+        if len(x_val) == 0 or len(x_test) == 0:
+            raise ValueError("Not enough validation/test sequence samples")
+
+        # Make sure the chronological training split contains every class before fitting classifiers.
+        if np.unique(y_train).size < 3:
+            raise ValueError("Training split is missing one or more direction classes; choose a wider date range")
 
         lstm = self._build_lstm((seq_len, len(FEATURES)))
         cnn = self._build_cnn((seq_len, len(FEATURES)))
         cb = [
             tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True),
             tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-5),
-            tf.keras.callbacks.LambdaCallback(on_epoch_end=lambda e, logs: progress(e + 1, epochs, float(logs.get("loss", 0)), float(logs.get("val_accuracy", logs.get("accuracy", 0))))),
+            tf.keras.callbacks.LambdaCallback(on_epoch_end=lambda e, logs: progress(e + 1, epochs, float((logs or {}).get("loss", 0)), float((logs or {}).get("val_accuracy", (logs or {}).get("accuracy", 0))))),
         ]
-        history_lstm = lstm.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=epochs, batch_size=64, shuffle=False, verbose=0, callbacks=cb)
-        history_cnn = cnn.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=epochs, batch_size=64, shuffle=False, verbose=0, callbacks=cb)
+        lstm.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=epochs, batch_size=64, shuffle=False, verbose=0, callbacks=cb)
+        cnn.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=epochs, batch_size=64, shuffle=False, verbose=0, callbacks=cb)
 
         flat_train = x_train[:, -1, :]
         flat_val = x_val[:, -1, :]
@@ -200,12 +230,10 @@ class EnsembleBrain:
         probs = [
             lstm.predict(x_test, verbose=0),
             cnn.predict(x_test, verbose=0),
-            rf.predict_proba(flat_test),
-            lgb.predict_proba(flat_test),
+            self._pad_probabilities(rf.predict_proba(flat_test), rf),
+            self._pad_probabilities(lgb.predict_proba(flat_test), lgb),
         ]
-        scores = []
-        for p in probs:
-            scores.append(max(1e-6, accuracy_score(y_test, p.argmax(axis=1))))
+        scores = [max(1e-6, accuracy_score(y_test, p.argmax(axis=1))) for p in probs]
         weights = np.asarray(scores, dtype=float)
         weights = weights / weights.sum()
         fused = sum(w * p for w, p in zip(weights, probs))
@@ -213,7 +241,7 @@ class EnsembleBrain:
         accuracy = float(accuracy_score(y_test, pred))
         loss = float(log_loss(y_test, np.clip(fused, 1e-7, 1 - 1e-7), labels=[0, 1, 2]))
 
-        # Persist the four-model ensemble atomically enough for a Windows process.
+        self.model_dir.mkdir(parents=True, exist_ok=True)
         lstm.save(self.lstm_path, overwrite=True)
         cnn.save(self.cnn_path, overwrite=True)
         joblib.dump(rf, self.rf_path)
@@ -241,7 +269,7 @@ class EnsembleBrain:
             "maxDrawdown": 0.0,
             "modelVersion": "NodeTrade Ensemble LSTM+CNN+RF+LightGBM v1",
             "lastTrainedAt": int(pd.Timestamp.now(tz="UTC").timestamp()),
-            "lastTrainedDate": datetime.now(timezone.utc).isoformat(),
+            "lastTrainedDate": pd.Timestamp.now(tz="UTC").isoformat(),
             "totalSimulatedTrades": int(len(y_test)),
             "winningTrades": int((pred == y_test).sum()),
             "losingTrades": int((pred != y_test).sum()),
@@ -266,8 +294,8 @@ class EnsembleBrain:
         probs = [
             self.lstm.predict(seq, verbose=0)[0],
             self.cnn.predict(seq, verbose=0)[0],
-            self.rf.predict_proba(flat)[0],
-            self.lgb.predict_proba(flat)[0],
+            self._pad_probabilities(self.rf.predict_proba(flat), self.rf)[0],
+            self._pad_probabilities(self.lgb.predict_proba(flat), self.lgb)[0],
         ]
         fused = sum(w * p for w, p in zip(self.weights, probs))
         idx = int(np.argmax(fused))

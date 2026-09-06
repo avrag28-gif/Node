@@ -22,12 +22,11 @@ $mtRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
 if (Test-Path $mtRoot) { $terminalRoots = Get-ChildItem $mtRoot -Directory | Sort-Object LastWriteTime -Descending }
 $metaEditor = $null
 $metaCandidates = @(
-  (Join-Path ${env:ProgramFiles} 'MetaTrader 5\metaeditor64.exe'),
-  (Join-Path ${env:ProgramFiles} 'MetaTrader 5\metaeditor64.exe'),
+  (Join-Path $env:ProgramFiles 'MetaTrader 5\metaeditor64.exe'),
   (Join-Path ${env:ProgramFiles(x86)} 'MetaTrader 5\metaeditor64.exe')
 ) | Where-Object { $_ -and (Test-Path $_) }
 if ($metaCandidates.Count -gt 0) { $metaEditor = $metaCandidates[0] }
-if (-not $metaEditor) { $metaEditor = (Get-Command metaeditor64.exe -ErrorAction SilentlyContinue)?.Source }
+if (-not $metaEditor) { $metaCmd = Get-Command metaeditor64.exe -ErrorAction SilentlyContinue; if ($metaCmd) { $metaEditor = $metaCmd.Source } }
 if ($metaEditor -and $terminalRoots.Count -gt 0) {
   $dataExperts = Join-Path $terminalRoots[0].FullName 'MQL5\Experts'
   New-Item -ItemType Directory -Force -Path $dataExperts | Out-Null
@@ -39,7 +38,6 @@ if ($metaEditor -and $terminalRoots.Count -gt 0) {
   if (Test-Path $eaEx5) { Write-Host "NodeTradeEA.ex5 compiled: $eaEx5" -ForegroundColor Green }
 } else { Write-Host 'MetaEditor/MT5 data folder belum ditemukan; EA v3 tetap ada di server/nodetrade/.' -ForegroundColor Yellow }
 
-# One-time ngrok authentication. After this, future launches are one command.
 if ($env:NGROK_AUTHTOKEN) { ngrok config add-authtoken $env:NGROK_AUTHTOKEN }
 Write-Host 'Starting NodeTrade + Python Ensemble...' -ForegroundColor Green
 $nodeProc = Start-Process -FilePath 'node' -ArgumentList 'start-nodetrade.mjs' -WorkingDirectory $PWD -PassThru

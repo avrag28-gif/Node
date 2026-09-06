@@ -9,9 +9,10 @@ const PUBLIC_PORT = 3001;
 const AI_PORT = Number(process.env.NODETRADE_AI_PORT || 8010);
 const PY = process.env.NODETRADE_PYTHON || join(ROOT, '.venv', 'Scripts', 'python.exe');
 const children = [];
-function start(cmd, args, name, env = {}) { const p = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, ...env }, stdio: 'inherit', windowsHide: false }); children.push(p); p.on('exit', (code, signal) => console.log(`[NodeTrade] ${name} exited code=${code} signal=${signal || ''}`)); return p; }
+function start(cmd, args, name, env = {}) { const p = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, ...env }, stdio: 'inherit', windowsHide: false }); children.push(p); p.on('exit', (code, signal) => console.log(`[NodeTrade] ${name} exited code=${code} signal=${signal || ''}`)); p.on('error', err => console.error(`[NodeTrade] ${name} spawn error:`, err.message)); return p; }
 if (!existsSync(PY)) throw new Error(`Python venv not found: ${PY}`);
-start(PY, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(AI_PORT)], 'Python AI');
+// --app-dir makes ai_service/main.py able to import its sibling ensemble.py correctly.
+start(PY, ['-m', 'uvicorn', 'main:app', '--app-dir', join(ROOT, 'ai_service'), '--host', '127.0.0.1', '--port', String(AI_PORT)], 'Python AI');
 start(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'dev'], 'Node server');
 function readBody(req) { return new Promise((resolve, reject) => { const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => resolve(Buffer.concat(chunks))); req.on('error', reject); }); }
 function request(port, method, path, headers = {}, body = null) { return new Promise((resolve, reject) => { const h = { ...headers, host: `127.0.0.1:${port}`, connection: 'close' }; delete h['content-length']; if (body) h['content-length'] = Buffer.byteLength(body); const r = http.request({ hostname: '127.0.0.1', port, path, method, headers: h }, res => { const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve({ status: res.statusCode || 500, headers: res.headers, body: Buffer.concat(chunks) })); }); r.on('error', reject); if (body) r.write(body); r.end(); }); }
@@ -26,7 +27,6 @@ async function handle(req, res) {
     const requestResult = await ai('/training/request', 'POST', { symbol: 'XAUUSD', timeframe: payload.timeframe || '15m', startDate: payload.startDate || null, endDate: payload.endDate || null });
     if (requestResult.status >= 400) return sendJson(res, requestResult.status, requestResult.data);
     const deadline = Date.now() + 15 * 60 * 1000;
-    // Wait until the MT5 EA has uploaded the requested historical range and cleared the request.
     while (Date.now() < deadline) {
       const q = await ai('/training/request', 'GET', null);
       if (!q.data?.pending) break;

@@ -2,7 +2,7 @@
 //| NodeTradeEA v3 - MT5 bridge for NodeTrade Python Ensemble       |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.10"
+#property version "3.11"
 #include <Trade/Trade.mqh>
 
 input group "Server"
@@ -23,6 +23,7 @@ bool connected=false;
 datetime lastActivate=0;
 datetime lastHeartbeat=0;
 datetime lastTrainingPoll=0;
+int lastHttpCode=0;
 
 string AccountID(){ return IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)); }
 string TrimUrl(string u){ StringTrimLeft(u); StringTrimRight(u); while(StringLen(u)>0 && StringSubstr(u,StringLen(u)-1,1)=="/") u=StringSubstr(u,0,StringLen(u)-1); return u; }
@@ -40,18 +41,39 @@ bool Post(string base,string path,string body,bool auth,string &out){
    if(auth && token!="") headers += "Authorization: Bearer "+token+"\r\n";
    char data[]; StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8); if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);
    char result[]; string rh=""; ResetLastError();
-   int code=WebRequest("POST",url,headers,InpHTTPTimeoutMs,data,result,rh);
-   if(code<200||code>=300){ PrintFormat("[NodeTrade] HTTP %d err=%d url=%s",code,GetLastError(),url); return false; }
+   lastHttpCode=WebRequest("POST",url,headers,InpHTTPTimeoutMs,data,result,rh);
+   if(lastHttpCode<200||lastHttpCode>=300){
+      string errBody=CharArrayToString(result,0,ArraySize(result),CP_UTF8);
+      PrintFormat("[NodeTrade] HTTP %d err=%d url=%s body=%s",lastHttpCode,GetLastError(),url,errBody);
+      return false;
+   }
    out=CharArrayToString(result,0,ArraySize(result),CP_UTF8); return true;
 }
 bool Get(string base,string path,string &out){
    string url=TrimUrl(base)+path; string headers="Accept: application/json\r\nUser-Agent: NodeTradeEA/3.1\r\n";
-   char data[]; char result[]; string rh=""; ResetLastError(); int code=WebRequest("GET",url,headers,InpHTTPTimeoutMs,data,result,rh);
-   if(code<200||code>=300){ PrintFormat("[NodeTrade] HTTP %d err=%d url=%s",code,GetLastError(),url); return false; } out=CharArrayToString(result,0,ArraySize(result),CP_UTF8); return true;
+   char data[]; char result[]; string rh=""; ResetLastError(); lastHttpCode=WebRequest("GET",url,headers,InpHTTPTimeoutMs,data,result,rh);
+   if(lastHttpCode<200||lastHttpCode>=300){ PrintFormat("[NodeTrade] HTTP %d err=%d url=%s",lastHttpCode,GetLastError(),url); return false; } out=CharArrayToString(result,0,ArraySize(result),CP_UTF8); return true;
 }
 
-bool Activate(){ string body=StringFormat("{\"account_id\":\"%s\",\"activation_key\":\"%s\"}",Esc(AccountID()),Esc(InpActivationCode)); string r=""; if(!Post(ServerBase(),"/v1/activate",body,false,r))return false; token=JStr(r,"token"); connected=(token!=""); return connected; }
-void Heartbeat(){ if(token=="")return; string r=""; string body=StringFormat("{\"account_id\":\"%s\",\"symbol\":\"%s\",\"terminal_time\":%d}",Esc(AccountID()),Esc(_Symbol),(long)TimeCurrent()); if(Post(ServerBase(),"/v1/heartbeat",body,true,r))lastHeartbeat=TimeCurrent(); }
+bool Activate(){
+   string body=StringFormat("{\"account_id\":\"%s\",\"activation_key\":\"%s\"}",Esc(AccountID()),Esc(InpActivationCode));
+   string r="";
+   if(!Post(ServerBase(),"/v1/activate",body,false,r)) return false;
+   string newToken=JStr(r,"token");
+   if(newToken==""){
+      PrintFormat("[NodeTrade] Activation returned no token. response=%s",r);
+      token=""; connected=false; return false;
+   }
+   token=newToken; connected=true; lastHeartbeat=TimeCurrent();
+   PrintFormat("[NodeTrade] Activation successful for account=%s",AccountID());
+   return true;
+}
+void Heartbeat(){
+   if(token=="")return;
+   string r=""; string body=StringFormat("{\"account_id\":\"%s\",\"symbol\":\"%s\",\"terminal_time\":%d}",Esc(AccountID()),Esc(_Symbol),(long)TimeCurrent());
+   if(Post(ServerBase(),"/v1/heartbeat",body,true,r)) lastHeartbeat=TimeCurrent();
+   else if(lastHttpCode==401){ token=""; connected=false; lastActivate=0; Print("[NodeTrade] Session rejected by server; reactivating."); }
+}
 
 string CandleJson(MqlRates &rates[],int n){ string s="["; for(int i=n-1;i>=0;i--){ if(i<n-1)s+=","; s+=StringFormat("{\"time\":%d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"volume\":%.0f}",(long)rates[i].time,rates[i].open,rates[i].high,rates[i].low,rates[i].close,(double)rates[i].tick_volume); } return s+"]"; }
 
@@ -80,7 +102,10 @@ void PollTrainingRequest(){
 void Analyze(){
    MqlTick tick; if(!SymbolInfoTick(_Symbol,tick))return; MqlRates rates[]; ArraySetAsSeries(rates,true); int n=CopyRates(_Symbol,Period(),0,MathMax(100,MathMin(InpBars,1000)),rates); if(n<80)return;
    string body=StringFormat("{\"account_id\":\"%s\",\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"equity\":%.2f,\"candles\":%s}",Esc(AccountID()),Esc(_Symbol),tick.bid,tick.ask,AccountInfoDouble(ACCOUNT_EQUITY),CandleJson(rates,n));
-   string r=""; if(!Post(ServerBase(),"/v1/analyze",body,true,r))return;
+   string r=""; if(!Post(ServerBase(),"/v1/analyze",body,true,r)){
+      if(lastHttpCode==401){ token=""; connected=false; lastActivate=0; Print("[NodeTrade] Analyze token rejected; session cleared and reactivation scheduled."); }
+      return;
+   }
    string action=JStr(r,"action"); double vol=0.01; double stop=0,target=0;
    int p=StringFind(r,"\"stop\""); if(p>=0){p=StringFind(r,":",p)+1;stop=StringToDouble(StringSubstr(r,p));}
    p=StringFind(r,"\"target\""); if(p>=0){p=StringFind(r,":",p)+1;target=StringToDouble(StringSubstr(r,p));}
@@ -95,4 +120,15 @@ void Execute(string side,double volume,double sl,double tp){
 
 int OnInit(){ EventSetTimer(MathMax(1,InpTimerSeconds)); PrintFormat("[NodeTrade] Server=%s AI=%s",ServerBase(),AiBase()); Activate(); return INIT_SUCCEEDED; }
 void OnDeinit(const int reason){ EventKillTimer(); }
-void OnTimer(){ if(token==""&&TimeCurrent()-lastActivate>=10){lastActivate=TimeCurrent();Activate();} if(token!=""&&TimeCurrent()-lastHeartbeat>=20)Heartbeat(); IngestLive(); if(TimeCurrent()-lastTrainingPoll>=5){lastTrainingPoll=TimeCurrent();PollTrainingRequest();} Analyze(); }
+void OnTimer(){
+   if(token==""){
+      if(TimeCurrent()-lastActivate>=10){ lastActivate=TimeCurrent(); Activate(); }
+      return;
+   }
+   if(TimeCurrent()-lastHeartbeat>=20)Heartbeat();
+   if(token=="")return;
+   IngestLive();
+   if(TimeCurrent()-lastTrainingPoll>=5){lastTrainingPoll=TimeCurrent();PollTrainingRequest();}
+   if(token=="")return;
+   Analyze();
+}

@@ -43,6 +43,15 @@ async function ngrokUrl() { try { const r = await request(4040, 'GET', '/api/tun
 
 async function handle(req, res) {
   const body = await readBody(req);
+
+  // Public EA gateway: remote MT5 terminals can use one NodeTrade URL for both
+  // Node server APIs and Python AI APIs. This keeps 127.0.0.1 entirely local.
+  const publicAiPaths = new Set(['/ingest', '/predict', '/training/request', '/training/request/clear', '/health']);
+  if (publicAiPaths.has(req.url) && (req.method === 'GET' || req.method === 'POST')) {
+    const result = await ai(req.url, req.method, req.method === 'POST' ? (() => { try { return JSON.parse(body.toString('utf8') || '{}'); } catch { return {}; } })() : null);
+    return sendJson(res, result.status, result.data);
+  }
+
   if (req.url === '/api/market/train' && req.method === 'POST') {
     let payload = {}; try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch {}
     const requestResult = await ai('/training/request', 'POST', { symbol: 'XAUUSD', timeframe: payload.timeframe || '15m', startDate: payload.startDate || null, endDate: payload.endDate || null });
@@ -57,7 +66,7 @@ async function handle(req, res) {
   }
   if (req.url === '/api/market/training-status' && req.method === 'GET') { const s = await ai('/training/status', 'GET', null); const d = s.data || {}; return sendJson(res, s.status, { isTraining: !!d.isTraining, currentEpoch: d.currentEpoch || 0, totalEpochs: d.totalEpochs || 0, currentLoss: d.currentLoss ?? null, currentAccuracy: d.currentAccuracy ?? null, status: d.status || 'idle', hasTrainedModel: !!d.summary, summary: d.summary || null, error: d.error || undefined }); }
   if (req.url === '/v1/analyze' && req.method === 'POST') { const node = await request(NODE_PORT, req.method, req.url, req.headers, body); let original; try { original = JSON.parse(node.body.toString('utf8')); } catch { original = null; } if (node.status < 200 || node.status >= 300 || !original) return sendRaw(res, node); let payload; try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch { payload = {}; } if (Array.isArray(payload.candles) && payload.candles.length) { await ai('/ingest', 'POST', { symbol: payload.symbol || 'XAUUSD', timeframe: payload.timeframe || '15m', candles: payload.candles }); const pred = await ai('/predict', 'POST', { symbol: payload.symbol || 'XAUUSD', timeframe: payload.timeframe || '15m', candles: payload.candles }); if (pred.status < 400 && pred.data?.model_ready) return sendJson(res, 200, { ...original, ...pred.data, server_signal_source: 'python_ensemble' }); } return sendRaw(res, node); }
-  if (req.url === '/api/market/analyze' && req.method === 'POST') { const node = await request(NODE_PORT, req.method, req.url, req.headers, body); let data; try { data = JSON.parse(node.body.toString('utf8')); } catch { return sendRaw(res, node); } if (Array.isArray(data.candles) && data.candles.length) { const pred = await ai('/predict', 'POST', { symbol: 'XAUUSD', timeframe: '15m', candles: data.candles }); if (pred.status < 400 && pred.data?.model_ready) data.signal = { ...data.signal, ...pred.data }; } return sendJson(res, node.status, data); }
+  if (req.url === '/api/market/analyze' && req.method === 'POST') { const node = await request(NODE_PORT, req.method, req.url, req.headers, body); let data; try { data = JSON.parse(node.body.toString('utf8')); } catch { return sendRaw(res, node); } if (Array.isArray(data.candles) && data.candles.length) { const pred = await ai('/predict', 'POST', { symbol: data.symbol || 'XAUUSD', timeframe: data.timeframe || '15m', candles: data.candles }); if (pred.status < 400 && pred.data?.model_ready) data.signal = { ...data.signal, ...pred.data }; } return sendJson(res, node.status, data); }
   if (req.url === '/api/status' && req.method === 'GET') { const node = await request(NODE_PORT, req.method, req.url, req.headers, body); let data; try { data = JSON.parse(node.body.toString('utf8')); } catch { return sendRaw(res, node); } const url = await ngrokUrl(); if (url) { data.publicUrl = url; data.customDomain = url; } return sendJson(res, node.status, data); }
   const node = await request(NODE_PORT, req.method, req.url, req.headers, body); return sendRaw(res, node);
 }

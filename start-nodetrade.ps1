@@ -41,18 +41,36 @@ if (-not $metaEditor) {
   if ($found) { $metaEditor = $found.FullName }
 }
 if ($metaEditor -and $terminalRoots.Count -gt 0) {
-  $dataExperts = Join-Path $terminalRoots[0].FullName 'MQL5\Experts'
+  $terminalRoot = $terminalRoots[0].FullName
+  $dataExperts = Join-Path $terminalRoot 'MQL5\Experts'
+  $dataMql5 = Join-Path $terminalRoot 'MQL5'
   New-Item -ItemType Directory -Force -Path $dataExperts | Out-Null
   $eaSource = Join-Path $dataExperts 'NodeTradeEA.mq5'
   Copy-Item '.\server\nodetrade\NodeTradeEA_v3.mq5' $eaSource -Force
+  $eaLog = [System.IO.Path]::ChangeExtension($eaSource, '.log')
+  $eaEx5 = [System.IO.Path]::ChangeExtension($eaSource, '.ex5')
+  Remove-Item -LiteralPath $eaLog -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $eaEx5 -Force -ErrorAction SilentlyContinue
   Write-Host "MetaEditor: [$metaEditor]" -ForegroundColor DarkGray
   Write-Host "Compile EA: [$eaSource]" -ForegroundColor Yellow
   if (-not (Test-Path -LiteralPath $metaEditor -PathType Leaf)) { throw "MetaEditor tidak ditemukan di path: $metaEditor" }
-  $compileArg = "/compile:$eaSource"
-  & "$metaEditor" $compileArg '/log'
-  if ($LASTEXITCODE -ne 0) { Write-Host "MetaEditor exit code: $LASTEXITCODE" -ForegroundColor Red }
-  $eaEx5 = [System.IO.Path]::ChangeExtension($eaSource, '.ex5')
-  if (Test-Path -LiteralPath $eaEx5 -PathType Leaf) { Write-Host "NodeTradeEA.ex5 compiled: $eaEx5" -ForegroundColor Green } else { Write-Host 'EA compile gagal; cek MetaEditor log.' -ForegroundColor Red }
+  $compileArg = "/compile:`"$eaSource`""
+  $includeArg = "/include:`"$dataMql5`""
+  & "$metaEditor" $compileArg $includeArg '/log'
+  $metaExit = $LASTEXITCODE
+  Start-Sleep -Seconds 2
+  if (Test-Path -LiteralPath $eaLog -PathType Leaf) {
+    Write-Host '=== MetaEditor compile log ===' -ForegroundColor Cyan
+    Get-Content -LiteralPath $eaLog | Select-Object -Last 80 | ForEach-Object { Write-Host $_ }
+  } else {
+    Write-Host 'MetaEditor tidak membuat file .log.' -ForegroundColor Red
+  }
+  if (Test-Path -LiteralPath $eaEx5 -PathType Leaf) {
+    Write-Host "NodeTradeEA.ex5 compiled: $eaEx5" -ForegroundColor Green
+  } else {
+    Write-Host "EA compile gagal (MetaEditor exit code: $metaExit)." -ForegroundColor Red
+    Write-Host "Log: $eaLog" -ForegroundColor Red
+  }
 } else { Write-Host 'MetaEditor/MT5 data folder belum ditemukan; EA v3 tetap ada di server/nodetrade/.' -ForegroundColor Yellow }
 
 if ($env:NGROK_AUTHTOKEN) { ngrok config add-authtoken $env:NGROK_AUTHTOKEN }
@@ -68,5 +86,11 @@ try {
   if ($url) { Write-Host "`nNodeTrade PUBLIC URL: $url" -ForegroundColor Green; Write-Host "MT5 WebRequest URL:  $url" -ForegroundColor Green; Write-Host "Dashboard:           $url" -ForegroundColor Green } else { Write-Host 'ngrok hidup tetapi URL belum tersedia.' -ForegroundColor Yellow }
 } catch { Write-Host 'ngrok belum mengembalikan URL. Cek http://127.0.0.1:4040.' -ForegroundColor Yellow }
 Write-Host '`nNodeTrade berjalan. Jangan tutup PowerShell ini.' -ForegroundColor Cyan
-Wait-Process -Id $nodeProc.Id
-if (-not $ngrokProc.HasExited) { Stop-Process -Id $ngrokProc.Id -Force }
+while ($true) {
+  if ($nodeProc.HasExited) {
+    Write-Host "NodeTrade process berhenti. Exit code: $($nodeProc.ExitCode)" -ForegroundColor Red
+    break
+  }
+  Start-Sleep -Seconds 2
+}
+if ($ngrokProc -and -not $ngrokProc.HasExited) { Stop-Process -Id $ngrokProc.Id -Force }

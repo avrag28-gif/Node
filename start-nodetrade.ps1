@@ -16,7 +16,6 @@ Write-Host 'Install/update Python AI dependencies...' -ForegroundColor Yellow
 Write-Host 'Install/update Node dependencies...' -ForegroundColor Yellow
 npm install
 
-# Compile the new MT5 EA automatically when a MetaTrader data directory is available.
 $terminalRoots = @()
 $mtRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
 if (Test-Path $mtRoot) { $terminalRoots = Get-ChildItem $mtRoot -Directory | Sort-Object LastWriteTime -Descending }
@@ -33,9 +32,10 @@ if ($metaEditor -and $terminalRoots.Count -gt 0) {
   $eaSource = Join-Path $dataExperts 'NodeTradeEA.mq5'
   Copy-Item '.\server\nodetrade\NodeTradeEA_v3.mq5' $eaSource -Force
   Write-Host "Compile EA: $eaSource" -ForegroundColor Yellow
-  & $metaEditor "/compile:$eaSource" /log
+  $compileArg = "/compile:$eaSource"
+  Start-Process -FilePath $metaEditor -ArgumentList $compileArg,'/log' -Wait -NoNewWindow
   $eaEx5 = [System.IO.Path]::ChangeExtension($eaSource, '.ex5')
-  if (Test-Path $eaEx5) { Write-Host "NodeTradeEA.ex5 compiled: $eaEx5" -ForegroundColor Green }
+  if (Test-Path $eaEx5) { Write-Host "NodeTradeEA.ex5 compiled: $eaEx5" -ForegroundColor Green } else { Write-Host 'EA compile gagal; cek MetaEditor log.' -ForegroundColor Red }
 } else { Write-Host 'MetaEditor/MT5 data folder belum ditemukan; EA v3 tetap ada di server/nodetrade/.' -ForegroundColor Yellow }
 
 if ($env:NGROK_AUTHTOKEN) { ngrok config add-authtoken $env:NGROK_AUTHTOKEN }

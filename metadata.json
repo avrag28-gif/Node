@@ -1,0 +1,6 @@
+{
+  "name": "NodeTrade MT5 Backend Server & Dashboard",
+  "description": "Algorithmic trading decision server and MT5 bridge with live signal monitoring, account licensing, and quantitative market regime analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -144,8 +144,20 @@ export class NodeTradeStore {
   public toggleLicense(accountId: string): boolean {
     const existing = this.licenses.get(accountId);
     if (!existing) return false;
+
     existing.enabled = !existing.enabled;
     this.licenses.set(accountId, existing);
+
+    // A disabled license must immediately invalidate all active MT5 sessions.
+    // Re-enabling does not restore an old token; the EA must activate again.
+    if (!existing.enabled) {
+      for (const [token, sess] of this.sessions.entries()) {
+        if (sess.account_id === accountId) {
+          this.sessions.delete(token);
+        }
+      }
+    }
+
     this.saveToDisk();
     return existing.enabled;
   }
@@ -217,7 +229,19 @@ export class NodeTradeStore {
     if (!sess) return false;
     if (sess.account_id !== accountId) return false;
 
+    const license = this.licenses.get(accountId);
     const now = Math.floor(Date.now() / 1000);
+    if (
+      !license ||
+      !license.enabled ||
+      (license.expires_at !== null &&
+        license.expires_at !== undefined &&
+        license.expires_at < now)
+    ) {
+      this.sessions.delete(token);
+      return false;
+    }
+
     if (now - sess.created_at >= maxAgeSeconds) {
       this.sessions.delete(token);
       return false;

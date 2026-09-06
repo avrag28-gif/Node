@@ -8,14 +8,12 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  BarChart2,
-  RefreshCw,
-} from "lucide-react";
+import { BarChart2, RefreshCw } from "lucide-react";
 import { Candle, ModelTrainingSummary, TradingViewQuote } from "../types";
 
 interface LiveMarketTelemetryProps {
   onRefreshData?: () => Promise<void>;
+  onTimeframeChange?: (timeframe: "15m" | "1h" | "4h") => Promise<void>;
   currentCandles: Candle[];
   tvQuotes: TradingViewQuote[];
   trainingSummary: ModelTrainingSummary | null;
@@ -25,6 +23,7 @@ interface LiveMarketTelemetryProps {
 
 export const LiveMarketTelemetry: React.FC<LiveMarketTelemetryProps> = ({
   onRefreshData,
+  onTimeframeChange,
   currentCandles,
   tvQuotes,
   trainingSummary,
@@ -32,6 +31,20 @@ export const LiveMarketTelemetry: React.FC<LiveMarketTelemetryProps> = ({
   livePrice,
 }) => {
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>("15m");
+  const [isChangingTimeframe, setIsChangingTimeframe] = useState(false);
+
+  const handleTimeframeChange = async (tf: "15m" | "1h" | "4h") => {
+    if (tf === selectedTimeframe || isChangingTimeframe) return;
+    setSelectedTimeframe(tf);
+    if (!onTimeframeChange) return;
+
+    setIsChangingTimeframe(true);
+    try {
+      await onTimeframeChange(tf);
+    } finally {
+      setIsChangingTimeframe(false);
+    }
+  };
 
   const chartData = currentCandles.map((c) => ({
     time: new Date(c.time * 1000).toLocaleTimeString([], {
@@ -67,7 +80,6 @@ export const LiveMarketTelemetry: React.FC<LiveMarketTelemetryProps> = ({
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm space-y-3.5">
-      {/* Header with price & quick metrics */}
       <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
         <div className="flex items-center space-x-2.5">
           <BarChart2 className="w-4 h-4 text-emerald-400" />
@@ -78,13 +90,13 @@ export const LiveMarketTelemetry: React.FC<LiveMarketTelemetryProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Timeframe selector */}
           <div className="flex items-center bg-slate-950 rounded p-0.5 border border-slate-800 text-[11px] font-mono">
             {(["15m", "1h", "4h"] as const).map((tf) => (
               <button
                 key={tf}
-                onClick={() => setSelectedTimeframe(tf)}
-                className={`px-2 py-0.5 rounded transition ${
+                onClick={() => handleTimeframeChange(tf)}
+                disabled={isLoading || isChangingTimeframe}
+                className={`px-2 py-0.5 rounded transition disabled:opacity-50 ${
                   selectedTimeframe === tf
                     ? "bg-slate-800 text-emerald-400 font-bold"
                     : "text-slate-400 hover:text-slate-200"
@@ -98,17 +110,16 @@ export const LiveMarketTelemetry: React.FC<LiveMarketTelemetryProps> = ({
           {onRefreshData && (
             <button
               onClick={() => onRefreshData()}
-              disabled={isLoading}
-              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition"
+              disabled={isLoading || isChangingTimeframe}
+              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition disabled:opacity-50"
               title="Refresh Feed"
             >
-              <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isLoading ? "animate-spin" : ""}`} />
+              <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isLoading || isChangingTimeframe ? "animate-spin" : ""}`} />
             </button>
           )}
         </div>
       </div>
 
-      {/* 3 Simple Indicators */}
       {primaryTv && (
         <div className="grid grid-cols-3 gap-2 text-[11px] font-mono">
           <div className="bg-slate-950 p-2 rounded border border-slate-800 text-center">
@@ -126,11 +137,10 @@ export const LiveMarketTelemetry: React.FC<LiveMarketTelemetryProps> = ({
         </div>
       )}
 
-      {/* Chart */}
       <div className="h-48 w-full">
         {chartData.length === 0 ? (
           <div className="h-full flex items-center justify-center text-slate-500 text-xs italic">
-            Loading chart...
+            {isChangingTimeframe ? "Loading timeframe..." : "Loading chart..."}
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">

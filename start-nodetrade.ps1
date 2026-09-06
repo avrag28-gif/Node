@@ -18,24 +18,34 @@ npm install
 
 $terminalRoots = @()
 $mtRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
-if (Test-Path $mtRoot) { $terminalRoots = Get-ChildItem $mtRoot -Directory | Sort-Object LastWriteTime -Descending }
+if (Test-Path $mtRoot) { $terminalRoots = @(Get-ChildItem $mtRoot -Directory | Sort-Object LastWriteTime -Descending) }
 $metaEditor = $null
 $metaCandidates = @(
   (Join-Path $env:ProgramFiles 'MetaTrader 5\metaeditor64.exe'),
-  (Join-Path ${env:ProgramFiles(x86)} 'MetaTrader 5\metaeditor64.exe')
-) | Where-Object { $_ -and (Test-Path $_) }
+  (Join-Path ${env:ProgramFiles(x86)} 'MetaTrader 5\metaeditor64.exe'),
+  (Join-Path $env:LOCALAPPDATA 'Programs\MetaTrader 5\metaeditor64.exe')
+) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) }
 if ($metaCandidates.Count -gt 0) { $metaEditor = $metaCandidates[0] }
-if (-not $metaEditor) { $metaCmd = Get-Command metaeditor64.exe -ErrorAction SilentlyContinue; if ($metaCmd) { $metaEditor = $metaCmd.Source } }
+if (-not $metaEditor) {
+  $metaCmd = Get-Command metaeditor64.exe -ErrorAction SilentlyContinue
+  if ($metaCmd) { $metaEditor = $metaCmd.Source }
+}
+if (-not $metaEditor) {
+  $found = Get-ChildItem @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA) -Filter 'metaeditor64.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($found) { $metaEditor = $found.FullName }
+}
 if ($metaEditor -and $terminalRoots.Count -gt 0) {
   $dataExperts = Join-Path $terminalRoots[0].FullName 'MQL5\Experts'
   New-Item -ItemType Directory -Force -Path $dataExperts | Out-Null
   $eaSource = Join-Path $dataExperts 'NodeTradeEA.mq5'
   Copy-Item '.\server\nodetrade\NodeTradeEA_v3.mq5' $eaSource -Force
+  Write-Host "MetaEditor: $metaEditor" -ForegroundColor DarkGray
   Write-Host "Compile EA: $eaSource" -ForegroundColor Yellow
   $compileArg = "/compile:$eaSource"
-  Start-Process -FilePath $metaEditor -ArgumentList $compileArg,'/log' -Wait -NoNewWindow
+  & $metaEditor $compileArg '/log'
+  if ($LASTEXITCODE -ne 0) { Write-Host "MetaEditor exit code: $LASTEXITCODE" -ForegroundColor Red }
   $eaEx5 = [System.IO.Path]::ChangeExtension($eaSource, '.ex5')
-  if (Test-Path $eaEx5) { Write-Host "NodeTradeEA.ex5 compiled: $eaEx5" -ForegroundColor Green } else { Write-Host 'EA compile gagal; cek MetaEditor log.' -ForegroundColor Red }
+  if (Test-Path $eaEx5 -PathType Leaf) { Write-Host "NodeTradeEA.ex5 compiled: $eaEx5" -ForegroundColor Green } else { Write-Host 'EA compile gagal; cek MetaEditor log.' -ForegroundColor Red }
 } else { Write-Host 'MetaEditor/MT5 data folder belum ditemukan; EA v3 tetap ada di server/nodetrade/.' -ForegroundColor Yellow }
 
 if ($env:NGROK_AUTHTOKEN) { ngrok config add-authtoken $env:NGROK_AUTHTOKEN }

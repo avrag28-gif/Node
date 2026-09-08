@@ -1,11 +1,71 @@
+```
+# Dependencies
 node_modules/
-build/
+
+# Build artifacts
 dist/
-coverage/
-.DS_Store
+build/
+target/
+
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
 *.log
-.env*
-!.env.example
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Distribution / packaging
+*.tar.gz
+*.zip
+*.gz
+
+# Node.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Compiled Binary files
+*.exe
+*.dll
+*.so
+*.a
+*.obj
+*.out
+
+# MyPy cache
+.mypy_cache/
+# Pytest cache
+.pytest_cache/
+
+# Gradle
+.gradle/
+
+# Virtual environments
 .venv/
-data/mt5/
-models/ensemble/
+venv/
+```
